@@ -52,7 +52,7 @@ import { z }  from "zod";
 /*  ─── env / constants ─── */
 const PORT          = process.env.PORT || 3001;
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "*").split(",").map(s => s.trim());
-const MODEL         = process.env.IMPORT_PRO_MODEL || "claude-opus-4-6";
+const MODEL         = process.env.IMPORT_PRO_MODEL || "claude-sonnet-4-6";
 const MAX_TOKENS    = Number(process.env.IMPORT_PRO_MAX_TOKENS || 12000);
 const THINKING_BUDGET = Number(process.env.IMPORT_PRO_THINKING_BUDGET || 6000);
 const ENABLE_THINKING = (process.env.IMPORT_PRO_THINKING ?? "1") !== "0";
@@ -141,6 +141,224 @@ const INGREDIENT_SYNONYMS = {
   "shrimps":           "Prawns",
   "stick of butter":   "Butter",   /* Claude must convert: 1 stick ≈ 113g */
   "knob of butter":    "Butter",   /* ≈ 15-20g */
+};
+
+/* ─────────────────────────────────────────────────────────────────────────
+   INGREDIENT_TRANSLATIONS  — non-English names → canonical English names.
+   Keys are lowercase (accents stripped where common), values are the same
+   canonical English strings used in INGREDIENT_SYNONYMS / the ingredient
+   library.  Used in two places:
+     1. The system prompt synonym block, so the LLM resolves names correctly.
+     2. estimateFlavour() resolver, so the flavour engine works on foreign
+        recipes even if the LLM translated a name slightly differently.
+   Organised by language for maintainability.
+   ──────────────────────────────────────────────────────────────────────── */
+const INGREDIENT_TRANSLATIONS = {
+
+  /* ── SPANISH ───────────────────────────────────────────────────────────── */
+  /* meats / minces */
+  "carne molida de vacuno":   "Beef Mince",
+  "carne molida de res":      "Beef Mince",
+  "carne picada de vacuno":   "Beef Mince",
+  "carne picada de res":      "Beef Mince",
+  "carne molida":             "Beef Mince",   /* generic — context usually beef */
+  "carne picada":             "Beef Mince",
+  "carne de vacuno":          "Beef",
+  "carne de res":             "Beef",
+  "vacuno":                   "Beef",
+  "carne molida de cerdo":    "Pork Mince",
+  "carne picada de cerdo":    "Pork Mince",
+  "cerdo":                    "Pork",
+  "carne de cerdo":           "Pork",
+  "carne molida de cordero":  "Lamb Mince",
+  "cordero":                  "Lamb",
+  "carne de cordero":         "Lamb",
+  "carne molida de pollo":    "Chicken Mince",
+  "pollo":                    "Chicken",
+  "pechuga de pollo":         "Chicken Breast",
+  "muslo de pollo":           "Chicken Thigh",
+  "costillas":                "Short Rib",
+  "tocino":                   "Bacon",
+  "panceta":                  "Pancetta",
+  "jamon":                    "Ham",
+  "jamón":                    "Ham",
+  "chorizo":                  "Chorizo",
+  "salchicha":                "Sausage",
+  /* vegetables */
+  "cebolla":                  "Brown Onion",
+  "cebolla blanca":           "Brown Onion",
+  "cebolla amarilla":         "Brown Onion",
+  "cebolla morada":           "Red Onion",
+  "cebolla roja":             "Red Onion",
+  "cebolleta":                "Spring Onion",
+  "cebolla de verdeo":        "Spring Onion",
+  "ajo":                      "Garlic",
+  "diente de ajo":            "Garlic",
+  "dientes de ajo":           "Garlic",
+  "tomate":                   "Tomato",
+  "tomates":                  "Tomato",
+  "tomate en lata":           "Canned Tomatoes",
+  "tomates en lata":          "Canned Tomatoes",
+  "tomates triturados":       "Canned Tomatoes",
+  "pasta de tomate":          "Tomato Paste",
+  "pure de tomate":           "Tomato Paste",
+  "puré de tomate":           "Tomato Paste",
+  "pimiento":                 "Capsicum",
+  "pimiento rojo":            "Capsicum",
+  "pimiento verde":           "Capsicum",
+  "pimiento amarillo":        "Capsicum",
+  "aji":                      "Capsicum",
+  "ají":                      "Capsicum",
+  "aji verde":                "Capsicum",
+  "paprika":                  "Paprika",
+  "pimentón":                 "Paprika",
+  "pimenton":                 "Paprika",
+  "zanahoria":                "Carrot",
+  "papa":                     "Potato",
+  "papas":                    "Potato",
+  "patata":                   "Potato",
+  "patatas":                  "Potato",
+  "camote":                   "Sweet Potato",
+  "batata":                   "Sweet Potato",
+  "zapallo":                  "Pumpkin",
+  "calabaza":                 "Pumpkin",
+  "choclo":                   "Corn",
+  "maiz":                     "Corn",
+  "maíz":                     "Corn",
+  "poroto":                   "Bean",
+  "frijol":                   "Bean",
+  "frijoles":                 "Bean",
+  "porotos":                  "Bean",
+  "lentejas":                 "Lentils",
+  "garbanzos":                "Chickpeas",
+  "espinaca":                 "Spinach",
+  "espinacas":                "Spinach",
+  "acelga":                   "Silverbeet",
+  "lechuga":                  "Lettuce",
+  "apio":                     "Celery",
+  "puerro":                   "Leek",
+  "champiñon":                "Mushrooms",
+  "champiñones":              "Mushrooms",
+  "hongos":                   "Mushrooms",
+  "berenjena":                "Eggplant",
+  "zapallito":                "Zucchini",
+  "zucchini":                 "Zucchini",
+  "brocoli":                  "Broccoli",
+  "brócoli":                  "Broccoli",
+  /* pantry / dairy */
+  "harina":                   "Plain Flour",
+  "harina de trigo":          "Plain Flour",
+  "harina común":             "Plain Flour",
+  "azucar":                   "Caster Sugar",
+  "azúcar":                   "Caster Sugar",
+  "azúcar rubia":             "Brown Sugar",
+  "azucar rubia":             "Brown Sugar",
+  "azúcar morena":            "Brown Sugar",
+  "sal":                      "Salt",
+  "sal fina":                 "Salt",
+  "sal marina":               "Sea Salt Flakes",
+  "pimienta":                 "Black Pepper",
+  "pimienta negra":           "Black Pepper",
+  "aceite de oliva":          "Olive Oil",
+  "aceite de oliva extra virgen": "Extra Virgin Olive Oil",
+  "aceite vegetal":           "Vegetable Oil",
+  "aceite":                   "Vegetable Oil",
+  "mantequilla":              "Butter",
+  "manteca":                  "Butter",           /* AR/CL/PY */
+  "crema":                    "Heavy Cream",
+  "crema de leche":           "Heavy Cream",
+  "nata":                     "Heavy Cream",      /* ES */
+  "leche":                    "Milk",
+  "leche entera":             "Milk",
+  "huevo":                    "Egg",
+  "huevos":                   "Egg",
+  "queso":                    "Cheese",
+  "queso parmesano":          "Parmesan",
+  "queso rallado":            "Parmesan",
+  "caldo":                    "Stock",
+  "caldo de pollo":           "Chicken Stock",
+  "caldo de carne":           "Beef Stock",
+  "caldo de verduras":        "Vegetable Stock",
+  "vino tinto":               "Red Wine",
+  "vino blanco":              "White Wine",
+  "vinagre":                  "White Vinegar",
+  "vinagre de vino tinto":    "Red Wine Vinegar",
+  "vinagre balsámico":        "Balsamic Vinegar",
+  "vinagre balsamico":        "Balsamic Vinegar",
+  /* herbs / spices */
+  "perejil":                  "Parsley",
+  "cilantro":                 "Fresh Coriander",
+  "oregano":                  "Oregano",
+  "orégano":                  "Oregano",
+  "comino":                   "Cumin",
+  "laurel":                   "Bay Leaf",
+  "tomillo":                  "Thyme",
+  "romero":                   "Rosemary",
+  "albahaca":                 "Basil",
+  "aji molido":               "Chilli Flakes",
+  "ají molido":               "Chilli Flakes",
+  "merkén":                   "Chilli Flakes",    /* CL smoked chilli */
+  "merken":                   "Chilli Flakes",
+  "limon":                    "Lemon",
+  "limón":                    "Lemon",
+  "lima":                     "Lime",
+  /* ── FRENCH ────────────────────────────────────────────────────────────── */
+  "beurre":                   "Butter",
+  "farine":                   "Plain Flour",
+  "sucre":                    "Caster Sugar",
+  "sucre glace":              "Icing Sugar",
+  "sel":                      "Salt",
+  "poivre":                   "Black Pepper",
+  "oignon":                   "Brown Onion",
+  "oignons":                  "Brown Onion",
+  "ail":                      "Garlic",
+  "tomate":                   "Tomato",
+  "crème fraîche":            "Sour Cream",
+  "creme fraiche":            "Sour Cream",
+  "crème":                    "Heavy Cream",
+  "lait":                     "Milk",
+  "oeuf":                     "Egg",
+  "oeufs":                    "Egg",
+  "viande hachée":            "Beef Mince",
+  "boeuf haché":              "Beef Mince",
+  "poulet":                   "Chicken",
+  "porc":                     "Pork",
+  "boeuf":                    "Beef",
+  "agneau":                   "Lamb",
+  "lardons":                  "Bacon",
+  "huile d'olive":            "Olive Oil",
+  "citron":                   "Lemon",
+  "persil":                   "Parsley",
+  "thym":                     "Thyme",
+  "romarin":                  "Rosemary",
+  /* ── ITALIAN ────────────────────────────────────────────────────────────── */
+  "burro":                    "Butter",
+  "farina":                   "Plain Flour",
+  "zucchero":                 "Caster Sugar",
+  "sale":                     "Salt",
+  "pepe":                     "Black Pepper",
+  "cipolla":                  "Brown Onion",
+  "aglio":                    "Garlic",
+  "pomodoro":                 "Tomato",
+  "pomodori":                 "Tomato",
+  "concentrato di pomodoro":  "Tomato Paste",
+  "olio di oliva":            "Olive Oil",
+  "olio extravergine":        "Extra Virgin Olive Oil",
+  "uovo":                     "Egg",
+  "uova":                     "Egg",
+  "latte":                    "Milk",
+  "panna":                    "Heavy Cream",
+  "carne macinata":           "Beef Mince",
+  "macinato di manzo":        "Beef Mince",
+  "pollo":                    "Chicken",
+  "maiale":                   "Pork",
+  "manzo":                    "Beef",
+  "agnello":                  "Lamb",
+  "limone":                   "Lemon",
+  "prezzemolo":               "Parsley",
+  "basilico":                 "Basil",
+  "timo":                     "Thyme",
+  "rosmarino":                "Rosemary",
 };
 
 /* Verb → canonical process key.  Many cookbook verbs map to one process. */
@@ -523,9 +741,13 @@ const serialiseProcesses = (lib = [], custom = {}) => {
   return rows.join("\n");
 };
 
-const serialiseSynonyms = () =>
-  Object.entries(INGREDIENT_SYNONYMS)
+const serialiseSynonyms = () => {
+  const regional = Object.entries(INGREDIENT_SYNONYMS)
     .map(([k, v]) => `  "${k}" → "${v}"`).join("\n");
+  const translations = Object.entries(INGREDIENT_TRANSLATIONS)
+    .map(([k, v]) => `  "${k}" → "${v}"`).join("\n");
+  return `Regional / variant spellings (English only):\n${regional}\n\nMultilingual translations (es/fr/it → canonical English):\n${translations}`;
+};
 
 /*  ═══════════════════════════════════════════════════════════════════════════
     SECTION 5 — THE SYSTEM PROMPT
@@ -555,14 +777,37 @@ the translation.  Walk these stages in order, in the thinking block, before
 producing the final tool call.
 
 ╭─ Stage 1 ── Normalise the source ──────────────────────────────────────╮
-│  • Detect language (en/es/fr/other).  All canonical IDs are English.   │
-│    Do NOT translate ingredient names you put into \`name\` — keep the   │
-│    canonical English library name (the front-end translates for the    │
-│    user).                                                              │
+│  • Detect language (en / es / fr / it / other).                        │
+│                                                                        │
+│  ★ MANDATORY TRANSLATION STEP (non-English recipes):                   │
+│    If the source is NOT English, translate every ingredient core noun  │
+│    to English in your thinking block BEFORE matching it to the library │
+│    or synonym table.  Follow this sequence every time:                 │
+│                                                                        │
+│    1. Translate the core noun to plain English.                        │
+│       e.g. "Carne Molida de Vacuno" → "beef mince"                    │
+│            "Mantequilla"            → "butter"                         │
+│            "Huevos"                 → "eggs"                           │
+│            "Viande hachée"          → "beef mince"                     │
+│            "Cipolla"                → "brown onion"                    │
+│    2. Apply the synonym/translation table (Part C) to resolve the      │
+│       canonical English library name.                                  │
+│       e.g. "beef mince" → "Beef Mince"  (canonical library name)      │
+│    3. The `name` field in the output MUST always be the canonical      │
+│       English library name — NEVER the original foreign-language text. │
+│       ❌ name: "Carne Molida de Vacuno"  (WRONG — raw foreign text)    │
+│       ✓  name: "Beef Mince"             (RIGHT — canonical English)    │
+│    4. Part C contains a Multilingual translations section for common   │
+│       es / fr / it ingredient names.  Consult it first before trying  │
+│       to translate from general knowledge.                             │
+│    5. If a foreign ingredient truly has no close English equivalent    │
+│       (very regional), translate as closely as possible and flag as a  │
+│       candidate using the translated English name, not the original.   │
+│                                                                        │
 │  • Identify the structural sections: title, description, servings,     │
 │    ingredient list(s), method/instructions, notes.                     │
-│  • Separate ingredient *groups* (cookbook headings like "For the       │
-│    sauce:", "Marinade:", "Topping:") — each group is a strong hint    │
+│  • Separate ingredient *groups* (cookbook headings like "Para la       │
+│    salsa:", "Marinada:", "Topping:") — each group is a strong hint    │
 │    for a separate lane or sub-component.                               │
 │  • Strip noise: serving suggestions, anecdotes, photo captions, ads.   │
 ╰────────────────────────────────────────────────────────────────────────╯
@@ -1615,6 +1860,22 @@ const reconcilePending = (out) => {
   return out;
 };
 
+/* Resolve an ingredient name to a FLAVOUR_HINTS entry.
+   Tries (in order):
+     1. Direct normalised-lowercase lookup  (English canonical names)
+     2. INGREDIENT_SYNONYMS  (English regional variants → canonical)
+     3. INGREDIENT_TRANSLATIONS  (es/fr/it → English canonical)
+   Returns the hint object or undefined. */
+const resolveFlavorHint = (rawName) => {
+  const key = (rawName || "").toLowerCase().trim();
+  if (FLAVOUR_HINTS[key]) return FLAVOUR_HINTS[key];
+  const viaRegional = INGREDIENT_SYNONYMS[key];
+  if (viaRegional && FLAVOUR_HINTS[viaRegional.toLowerCase()]) return FLAVOUR_HINTS[viaRegional.toLowerCase()];
+  const viaTranslation = INGREDIENT_TRANSLATIONS[key];
+  if (viaTranslation && FLAVOUR_HINTS[viaTranslation.toLowerCase()]) return FLAVOUR_HINTS[viaTranslation.toLowerCase()];
+  return undefined;
+};
+
 /* Estimate flavour from ingredients (only used if LLM gave the boring
    default 50/50/0/20/20 — we treat that as "didn't try"). */
 const estimateFlavour = (recipeDraft) => {
@@ -1626,8 +1887,7 @@ const estimateFlavour = (recipeDraft) => {
       for (const cell of row) {
         if (!cell?.ingredients) continue;
         for (const ing of cell.ingredients) {
-          const key = (ing.name || "").toLowerCase().trim();
-          const hint = FLAVOUR_HINTS[key];
+          const hint = resolveFlavorHint(ing.name);
           if (!hint) continue;
           /* weight by qty in grams-ish terms: 100 g equivalent = weight 1.
              countables: 1 ea ≈ 50 g, tsp ≈ 5 g, tbsp ≈ 15 g, cup ≈ 240 g. */
