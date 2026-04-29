@@ -52,7 +52,7 @@ import { z }  from "zod";
 /*  ─── env / constants ─── */
 const PORT          = process.env.PORT || 3001;
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "*").split(",").map(s => s.trim());
-const MODEL         = process.env.IMPORT_PRO_MODEL || "claude-sonnet-4-6";
+const MODEL         = process.env.IMPORT_PRO_MODEL || "claude-opus-4-6";
 const MAX_TOKENS    = Number(process.env.IMPORT_PRO_MAX_TOKENS || 12000);
 const THINKING_BUDGET = Number(process.env.IMPORT_PRO_THINKING_BUDGET || 6000);
 const ENABLE_THINKING = (process.env.IMPORT_PRO_THINKING ?? "1") !== "0";
