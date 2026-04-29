@@ -820,7 +820,7 @@ producing the final tool call.
 │      "1 cup heavy cream, warm"                                         │
 │      "salt and pepper, to taste"                                       │
 │                                                                        │
-│  Decompose each line into FIVE slots:                                  │
+│  Decompose each line into SIX slots:                                  │
 │    1.  QUANTITY        →  numeric (handle ranges → upper bound)        │
 │    2.  UNIT            →  one of: g, kg, ml, l, tsp, tbsp, cup, ea,    │
 │                            pinch, bunch, cloves, slice, strip, sprig,  │
@@ -835,6 +835,18 @@ producing the final tool call.
 │                            OPTS, not new ingredients ("fine",          │
 │                            "thinly", "warm", "room temperature").      │
 │                                                                        │
+│    6.  QUALIFIERS      →  quality/fat/spec descriptors that are NOT    │
+│                            part of the core ingredient identity.       │
+│                            e.g. "8% grasa", "extra lean", "sin hueso", │
+│                            "bajo en grasa", "boneless", "skinless",    │
+│                            "full-fat", "low-fat", "80/20".             │
+│                            Strip these from `name` and append them to  │
+│                            the step's `comment` field as a note.       │
+│                            e.g. comment: "Beef Mince: 8% fat"          │
+│                            NEVER let a qualifier bleed into `name`.    │
+│                            ❌ name: "Carne Molida 8% grasa"            │
+│                            ✓  name: "Beef Mince"                       │
+│                               comment: "Beef Mince: 8% fat"           │
 │  Examples:                                                             │
 │    "2 medium yellow onions, finely chopped"                           │
 │      qty=2  unit=ea  noun=Brown Onion (id=onion)                      │
@@ -843,6 +855,11 @@ producing the final tool call.
 │    "1 stick of butter, softened"                                      │
 │      qty=113  unit=g  noun=Butter (id=butter)                         │
 │      pre-processes=[]  modifiers=[softened → no-op, just instruction] │
+│                                                                        │
+│    "500g Carne Molida 8% grasa"  ← QUALIFIER + TRANSLATION TRAP        │
+│      qty=500  unit=g  noun=Beef Mince  qualifier="8% fat"             │
+│      → name: "Beef Mince"  comment: "Beef Mince: 8% fat"             │
+│      ❌ WRONG: name: "Carne Molida 8% grasa"  (raw foreign + qualifier) │
 │                                                                        │
 │    "fine chopped onion"  ← THE CANONICAL TRAP                         │
 │      noun=Brown Onion (id=onion)                                      │
@@ -1969,6 +1986,133 @@ const normaliseUnit = (u) => {
 };
 
 /* Walk every step and reconcile kinetics + enums. */
+
+/* ─────────────────────────────────────────────────────────────────────────
+   SERVER-SIDE INGREDIENT NAME TRANSLATION
+   Guaranteed fallback: even if the LLM ignores the Stage 1 mandate and
+   emits a foreign-language name, this pass rewrites it to the canonical
+   English library name by walking INGREDIENT_TRANSLATIONS then
+   INGREDIENT_SYNONYMS.  Called from postProcess() on every ingredient.
+   ──────────────────────────────────────────────────────────────────────── */
+const QUALIFIER_PATTERNS = [
+  /* Spanish */
+  /\b\d+\s*%\s*(grasa|materia grasa|fat|mg)/i,
+  /\b(extra\s+)?magra?\b/i,
+  /\bbajo\s+en\s+grasa\b/i,
+  /\bsin\s+hueso\b/i,
+  /\bcon\s+hueso\b/i,
+  /\bsin\s+piel\b/i,
+  /\bcon\s+piel\b/i,
+  /\bdeshuesad[ao]\b/i,
+  /\bentera\b/i,
+  /\benvasad[ao]\b/i,
+  /\bfresc[ao]\b/i,
+  /\bcongelad[ao]\b/i,
+  /* French */
+  /\bmaigre\b/i,
+  /\bsans\s+os\b/i,
+  /\bfraîche?\b/i,
+  /* English */
+  /\b\d+\s*%\s*(lean|fat|protein)\b/i,
+  /\bextra\s+(lean|fine|thick)\b/i,
+  /\bboneless\b/i,
+  /\bskinless\b/i,
+  /\bfresh\b/i,
+  /\bfrozen\b/i,
+  /\bwhole\s+milk\b/i,
+  /\bfull.?fat\b/i,
+  /\blow.?fat\b/i,
+];
+
+/**
+ * Given an ingredient name (possibly in a foreign language or with quality
+ * qualifiers), returns:
+ *   { name: <canonical English name>, qualifier: <stripped qualifier or ""> }
+ *
+ * Resolution order:
+ *   1. Strip trailing qualifiers first (e.g. "Carne Molida 8% grasa" → name="Carne Molida", qual="8% grasa")
+ *   2. Lowercase + trim
+ *   3. Check INGREDIENT_TRANSLATIONS (foreign → English canonical)
+ *   4. Check INGREDIENT_SYNONYMS (English regional → canonical)
+ *   5. If still unknown, return the stripped name as-is (possibly foreign)
+ *
+ * The qualifier (if any) is returned separately so the caller can append it
+ * to the step's comment field.
+ */
+const resolveIngredientName = (rawName) => {
+  if (!rawName) return { name: rawName, qualifier: "" };
+
+  let name = rawName.trim();
+  let qualifier = "";
+
+  /* --- Pass 1: extract trailing qualifiers -------------------------------- */
+  /* Strategy: for each qualifier pattern, test the WHOLE name.  If it matches
+     anywhere, separate the qualifier fragment from the core noun.
+     We work on a working copy so we can strip multiple qualifiers. */
+  let working = name;
+  const qualParts = [];
+
+  for (const pat of QUALIFIER_PATTERNS) {
+    const m = working.match(pat);
+    if (m) {
+      qualParts.push(m[0].trim());
+      working = working.replace(pat, " ").replace(/\s{2,}/g, " ").trim();
+      /* Strip leading/trailing punctuation left behind */
+      working = working.replace(/^[,;:\-]+|[,;:\-]+$/g, "").trim();
+    }
+  }
+  /* Also strip bare percentage patterns not caught above: "8%" alone */
+  working = working.replace(/\b\d+\s*%\b/g, (m) => { qualParts.push(m); return ""; })
+                   .replace(/\s{2,}/g, " ").trim()
+                   .replace(/^[,;:\-]+|[,;:\-]+$/g, "").trim();
+
+  if (qualParts.length > 0) {
+    qualifier = qualParts.join(", ");
+    name = working || name; /* fall back to original if stripping left nothing */
+  }
+
+  /* --- Pass 2: translate / resolve to canonical English name -------------- */
+  const key = name.toLowerCase().trim();
+  const translated =
+    INGREDIENT_TRANSLATIONS[key] ||
+    INGREDIENT_SYNONYMS[key]     ||
+    null;
+
+  if (translated) name = translated;
+
+  return { name, qualifier };
+};
+
+/**
+ * Walk every ingredient in every step of the draft and:
+ *   a) resolve the name to canonical English (via resolveIngredientName)
+ *   b) if a qualifier was stripped, append it to the step's comment field
+ *
+ * Mutates the recipeDraft in-place.
+ */
+const translateIngredientNames = (recipeDraft) => {
+  for (const prep of recipeDraft.preparations || []) {
+    for (const row of prep.grid || []) {
+      if (!Array.isArray(row)) continue;
+      for (const step of row) {
+        if (!step?.ingredients) continue;
+        const extraComments = [];
+        for (const ing of step.ingredients) {
+          const { name, qualifier } = resolveIngredientName(ing.name);
+          ing.name = name;
+          if (qualifier) {
+            extraComments.push(`${name}: ${qualifier}`);
+          }
+        }
+        if (extraComments.length > 0) {
+          const existing = (step.comment || "").trim();
+          step.comment = [existing, ...extraComments].filter(Boolean).join(" | ");
+        }
+      }
+    }
+  }
+};
+
 const postProcess = (out) => {
   if (!out?.recipeDraft) return out;
 
@@ -1999,6 +2143,10 @@ const postProcess = (out) => {
       }
     }
   }
+
+  /* Server-side ingredient name translation + qualifier stripping.
+     Guaranteed fallback even when the LLM emits foreign-language names. */
+  translateIngredientNames(out.recipeDraft);
 
   /* Flavour: estimate if punted or missing. */
   if (!out.recipeDraft.flavour || isFlavourPunt(out.recipeDraft.flavour)) {
